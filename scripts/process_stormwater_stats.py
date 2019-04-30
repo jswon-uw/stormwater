@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/bin/usr/python3
 import stormwater_functions as sf
 import pandas as pd
 
@@ -10,8 +10,6 @@ ra_df = pd.read_csv(out, index_col=0, parse_dates=[0], infer_datetime_format=Tru
 #ra_df = sf.calc_runsum(a)
 #ra_df.to_csv(out)
 
-
-dmy = pd.DataFrame()
 
 mo_df = sf.calc_momax(ra_df)
 print("MO MAX")
@@ -25,11 +23,7 @@ sn_df = sf.calc_snmax(ra_df)
 print('SN MAX')
 print(sn_df)
 
-
 stats = sf.calc_stats(wy_df, sn_df, mo_df, False)
 
-stats.to_csv('stats_check.csv')
 print(stats)
-
-
 
