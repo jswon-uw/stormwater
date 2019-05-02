@@ -5,7 +5,6 @@ import calendar
 import math
 import sys
 
-
 # Given a path to timeseries csv, reads and returns a formatted timeseries dataframe
 def read_ts(infile):
     df = pd.read_csv(infile)
@@ -19,7 +18,6 @@ def read_ts(infile):
     
 # Given a timeseries dataframe, create a running sum timeseries dataset
 def calc_runsum(df):
-    print(df)
     df = df[['1hr']]
     df.columns = '1hr Precip'
     
@@ -29,9 +27,35 @@ def calc_runsum(df):
         
     return df
 
-# Given a timeseries dataframe, calculate the monthly maximum time-series
-def calc_momax(df):
-    df = df.resample('M').max()
+
+# Given a timeseries dataframe, calculate the water-year aggregated time-series
+def calc_wyagg(df, aggtype=max):
+    df = df.shift(92 * 24).resample('Y').agg(aggtype)
+    df.iloc[0] = np.nan
+    
+    # Formatting
+    df.insert(0, 'Water Year', df.index.year)
+
+    return df
+
+# Given a timeseries dataframe, calculate the seasonal aggregated time-series
+def calc_snagg(df, aggtype=max):
+    df = df.copy()
+    seasons = ['DJF', 'MAM', 'JJA', 'SON']
+    df['Season'] = np.floor(df.index.month / 3).astype(int) % 4    
+    df.index = df.index.shift(31*24, freq='H')
+    df.insert(0, 'Year', df.index.year)
+    df = df.groupby(['Year', 'Season']).agg(aggtype).reset_index()
+    df['Season'] = df['Season'].apply(lambda x: seasons[x])
+    df.index = pd.to_datetime(df['Year'].map(str) + '-01-01')
+    df.iloc[0,2:] = np.nan
+    
+    return df
+    
+
+# Given a timeseries dataframe, calculate the monthly aggregated time-series
+def calc_moagg(df, aggtype=max):
+    df = df.resample('M').agg(aggtype)
 
     # Formatting
     df.insert(0, 'Year', df.index.year)
@@ -39,29 +63,7 @@ def calc_momax(df):
 
     return df
 
-# Given a timeseries dataframe, calculate the seasonal maximum time-series
-def calc_snmax(df):
-    df = df.shift(31*24).resample('3M').max()
 
-    # Formatting
-    df.insert(0, 'Year', df.index.year)
-    df = df.reset_index(drop=True)
-    seasons = ['DJF', 'MAM', 'JJA', 'SON']
-    slist = [seasons[i % 4] for i in df.index]
-    df.insert(1, 'Season', slist)
-
-    return df
-
-# Given a timeseries dataframe, calculate the water-year maximum time-series
-def calc_wymax(df):
-    df = df.shift(92 * 24).resample('Y').max()
-    df.iloc[0] = np.nan
-    
-    # Formatting
-    df.insert(0, 'Water Year', df.index.year)
-
-    return df
-    
 # Given a timeseries dataframe, return the dataset with only non-zero times
 def filter_nonzero(df):
     df = df[df['1hr'] > 0]
@@ -134,12 +136,15 @@ def calc_gev(df, yrs=[2,5,10,25,50,100]):
 
 
 # Helper function to process each period dataframe merging common functions in each calc_stats function
-def process_stats_df(pdf, stats, period):
+def process_stats_df(sdf, pdf, stats, period):
+    sdf = sdf[[ x for x in pdf.columns if 'hr' in x]]
     pdf = pdf[[ x for x in pdf.columns if 'hr' in x]]
     df = pd.DataFrame()
 
     # Combine total sum
-    ddf = pd.DataFrame(pdf.sum()).T
+    ddf = pd.DataFrame(sdf.sum()).T
+    ddf = ddf / sdf.count()    
+    ddf.iloc[0] = ddf.iloc[0,0].repeat(len(ddf.columns))
     ddf.insert(0, 'Water Year or Month', stats)
     ddf.insert(1, 'Statistic', 'Total')
     ddf.insert(2, 'Years', period)
@@ -164,33 +169,37 @@ def process_stats_df(pdf, stats, period):
     
 
 # Given water-year dataframe and list of periods, return extreme statistics dataframe
-def calc_stats_wy(wy_df, periods):
+def calc_stats_wy(ra_df, wy_df, periods):
     wy_df.index = pd.to_datetime(wy_df['Water Year'].map(str) + '-01-01')
-
+    sdf = calc_wyagg(ra_df, sum)
+    
     df = pd.DataFrame()
     for styr, edyr in periods:
+        psdf = sdf.loc[str(styr)+'-01-01':str(edyr)+'-12-31']
         pdf = wy_df.loc[str(styr)+'-01-01':str(edyr)+'-12-31']
-        ddf = process_stats_df(pdf, 'Water Year', '{}-{}'.format(styr, edyr))
+        ddf = process_stats_df(psdf, pdf, 'Water Year', '{}-{}'.format(styr, edyr))
         df = df.append(ddf)
                 
     # Sort and relabel results
     df['index'] = df.index
     df.sort_values(['index', 'Years'], inplace=True)
     df.drop(['index'], axis=1, inplace=True)
-    
+
     return df
 
 
 # Given seasonal dataframe and list of periods, return extreme statistics dataframe
-def calc_stats_sn(sn_df, periods):
+def calc_stats_sn(ra_df, sn_df, periods):
     sn_df.index = pd.to_datetime(sn_df['Year'].map(str) + '-01-01')
-    sns = ['DJF', 'MAM', 'JJA', 'SON']    
+    sdf = calc_snagg(ra_df, sum)    
+    sns = ['DJF', 'MAM', 'JJA', 'SON']
     
     df = pd.DataFrame()
     for styr, edyr in periods:
         for sn in sns:
+            psdf = sdf[sdf['Season'] == sn].loc[str(styr)+'-01-01':str(edyr)+'-12-31']
             pdf = sn_df[sn_df['Season'] == sn].loc[str(styr)+'-01-01':str(edyr)+'-12-31']
-            ddf = process_stats_df(pdf, sn, '{}-{}'.format(styr, edyr))
+            ddf = process_stats_df(psdf, pdf, sn, '{}-{}'.format(styr, edyr))
             df = df.append(ddf)
 
     # Sort results
@@ -205,14 +214,16 @@ def calc_stats_sn(sn_df, periods):
 
 
 # Given monthly dataframe and list of periods, return extreme statistics dataframe
-def calc_stats_mo(mo_df, periods):
+def calc_stats_mo(ra_df, mo_df, periods):
     mo_df.index = pd.to_datetime(mo_df['Year'].map(str) + '-' + mo_df['Month'].map(str) + '-01')
+    sdf = calc_moagg(ra_df, sum)
     df = pd.DataFrame()
     
     # Loop through each month for each period
     for (styr,edyr), mo in [(x, y) for x in periods for y in range(1,13)]:
+        psdf = sdf[sdf['Month'] == mo].loc[str(styr)+'-01-01':str(edyr)+'-12-31']
         pdf = mo_df[mo_df['Month'] == mo].loc[str(styr)+'-01-01':str(edyr)+'-12-31']
-        ddf = process_stats_df(pdf, mo, '{}-{}'.format(styr, edyr))
+        ddf = process_stats_df(psdf, pdf, mo, '{}-{}'.format(styr, edyr))
         df = df.append(ddf)
 
     # Sort results
@@ -227,25 +238,23 @@ def calc_stats_mo(mo_df, periods):
         
 
 # Given water-year, seasonal, and monthly dataframes, returns combined extreme statistics dataframe
-def calc_stats(wy_df, sn_df, mo_df, isHis=True):
+def calc_stats(ra_df, wy_df, sn_df, mo_df, isHis=True):
     df = pd.DataFrame()
     
     if isHis:
-        styr = int(wy_df.ix[0, 'Water Year'])
-        edyr = int(wy_df.ix[-1, 'Water Year'])
+        styr = int(ra_df.ix[0, 'Water Year'])
+        edyr = int(ra_df.ix[-1, 'Water Year'])
         periods = [(styr, edyr)]
     else:
         periods = [(1970, 1999), (1980, 2009), (2020, 2049), (2030, 2059),
                (2040, 2069), (2050, 2099), (2060, 2099), (2070, 2099)]
         
     # Process water years
-    df = df.append(calc_stats_wy(wy_df, periods))
-        
+    df = df.append(calc_stats_wy(ra_df, wy_df, periods))    
     # Process seasonal
-    df = df.append(calc_stats_sn(sn_df, periods))
-        
+    df = df.append(calc_stats_sn(ra_df, sn_df, periods))
     # Process monthly
-    df = df.append(calc_stats_mo(mo_df, periods))
+    df = df.append(calc_stats_mo(ra_df, mo_df, periods))
 
     return df
 
