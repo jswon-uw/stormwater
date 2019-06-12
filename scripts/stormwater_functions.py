@@ -19,12 +19,12 @@ def read_ts(infile):
 # Given a timeseries dataframe, create a running sum timeseries dataset
 def calc_runsum(df):
     df = df[['1hr']]
-    df.columns = '1hr Precip'
+    df.columns = ['1-hr Precip']
     
     hrs = [2, 3, 6, 12, 24, 48, 72, 120, 240, 360]
     for h in hrs:
-        df[str(h) + 'hr Precip'] = df['1hr Precip'].rolling(h).sum()
-        
+        n = df.shape[1]
+        df.insert(n, '{}-hr Precip'.format(h), df['1-hr Precip'].rolling(h).sum())
     return df
 
 
@@ -258,6 +258,24 @@ def calc_stats(ra_df, wy_df, sn_df, mo_df, isHis=True):
 
     return df
 
-# Given obs and fut statistical dataframe, returns percent change of statistical dataframe
-def calc_pchg(xf, yf):
-    print(1)
+# Given a statistical dataframe, returns percent change of statistical dataframe
+def calc_pchg(st):
+    his_period = ['1970-1999', '1980-2009']
+    his = st[[x in his_period for x in st['Years']]]
+    fut = st[[x not in his_period for x in st['Years']]]
+    mon = list(his.columns[0:2])
+    hrs = list(his.columns[3:])
+
+    foj = his.merge(fut, on=mon)
+    foj.rename(columns={'Years_y': 'Future Years', 'Years_x':'Historical Years'}, inplace=True)
+    
+    for h in hrs:
+        n = foj.shape[1]
+        fyr = foj[h + '_y']
+        hyr = foj[h + '_x']
+        pct = (fyr - hyr) / hyr * 100
+        foj.insert(n, h, pct)
+
+    foj = foj[mon + ['Future Years', 'Historical Years'] + hrs]
+    return foj.round(1)
+
