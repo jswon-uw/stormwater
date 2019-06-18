@@ -17,21 +17,25 @@ def read_ts(infile):
     
     
 # Given a timeseries dataframe, create a running sum timeseries dataset
-def calc_runsum(df):
+def calc_runsum(df, t=1):
     df = df[['1hr']]
     df.columns = ['1-hr Precip']
     
     hrs = [2, 3, 6, 12, 24, 48, 72, 120, 240, 360]
     for h in hrs:
         n = df.shape[1]
-        df.insert(n, '{}-hr Precip'.format(h), df['1-hr Precip'].rolling(h).sum())
+        roll = df['1-hr Precip'].rolling(h, min_periods=h*t).sum()
+        df.insert(n, '{}-hr Precip'.format(h), roll)
     return df
 
 
 # Given a timeseries dataframe, calculate the water-year aggregated time-series
-def calc_wyagg(df, aggtype=max):
+def calc_wyagg(df, aggtype=max, t=0.95):
+    ct = df.shift(92 * 24).resample('Y').count()
     df = df.shift(92 * 24).resample('Y').agg(aggtype)
-    df.iloc[0] = np.nan
+    ff = np.repeat(ct.index.is_leap_year[:, np.newaxis], df.shape[1], axis=1)
+    ff = (ff + 365) * 24 * t    
+    df[ct < ff] = np.nan
     
     # Formatting
     df.insert(0, 'Water Year', df.index.year)
@@ -39,24 +43,34 @@ def calc_wyagg(df, aggtype=max):
     return df
 
 # Given a timeseries dataframe, calculate the seasonal aggregated time-series
-def calc_snagg(df, aggtype=max):
+def calc_snagg(df, aggtype=max, t=0.95):
     df = df.copy()
-    seasons = ['DJF', 'MAM', 'JJA', 'SON']
+    seasons = ['DJF', 'MAM', 'JJA', 'SON']    
+    
     df['Season'] = np.floor(df.index.month / 3).astype(int) % 4    
-    df.index = df.index.shift(31*24, freq='H')
-    df.insert(0, 'Year', df.index.year)
+    df.index = df.index.shift(31*24, freq='H')                      # Shift to keep december first
+    df.insert(0, 'Year', df.index.year)    
+    ct = df.groupby(['Year', 'Season']).count().reset_index()
     df = df.groupby(['Year', 'Season']).agg(aggtype).reset_index()
+    df.index = pd.to_datetime(df.apply(lambda x: '{}-{:02d}-01'.format(int(x.Year), int(x.Season*3+2)), axis=1))
+    ff = ((df.index.is_leap_year)*1 + df.index.days_in_month + 61 + (df.index.month==2)*1)*24 * t
+    ff = np.repeat(np.array(ff)[:, np.newaxis], df.shape[1], axis=1)
+    mask = np.array(ct < ff)
+    mask[:, 0:2] = False
+    df[mask] = np.nan
     df['Season'] = df['Season'].apply(lambda x: seasons[x])
-    df.index = pd.to_datetime(df['Year'].map(str) + '-01-01')
-    df.iloc[0,2:] = np.nan
     
     return df
     
 
 # Given a timeseries dataframe, calculate the monthly aggregated time-series
-def calc_moagg(df, aggtype=max):
+def calc_moagg(df, aggtype=max, t=0.95):
+    ct = df.resample('M').count()    
     df = df.resample('M').agg(aggtype)
-
+    ff = np.repeat(np.array(ct.index.days_in_month)[:, np.newaxis], df.shape[1], axis=1)
+    ff = ff * 24 * t
+    df[ct < ff] = np.nan
+    
     # Formatting
     df.insert(0, 'Year', df.index.year)
     df.insert(1, 'Month', df.index.month)
@@ -279,3 +293,11 @@ def calc_pchg(st):
     foj = foj[mon + ['Future Years', 'Historical Years'] + hrs]
     return foj.round(1)
 
+
+
+# Output dataframe as csv with comment above header
+def csv_comment(df, out, comment, index=False):
+    f = open(out, 'a')
+    f.write(comment)
+    df.to_csv(f, index=index)
+    f.close()
